@@ -26,9 +26,9 @@ func NewSMSClient(endpoint, apiKey, senderID string) (*SMSClient, error) {
 		return nil, fmt.Errorf("SMS_API_KEY and SMS_SENDER_ID are required")
 	}
 	return &SMSClient{
-		endpoint: endpoint,
-		apiKey: apiKey,
-		senderID: senderID,
+		endpoint:   endpoint,
+		apiKey:     apiKey,
+		senderID:   senderID,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}, nil
 }
