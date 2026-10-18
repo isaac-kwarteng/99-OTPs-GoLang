@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -68,8 +69,8 @@ func TestSendAndVerifyOTPConsumesCode(t *testing.T) {
 	if _, err := service.VerifyOTP(context.Background(), verifyRequest); err != nil {
 		t.Fatalf("VerifyOTP() error = %v", err)
 	}
-	if _, err := service.VerifyOTP(context.Background(), verifyRequest); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("second VerifyOTP() status = %v, want InvalidArgument", status.Code(err))
+	if _, err := service.VerifyOTP(context.Background(), verifyRequest); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("second VerifyOTP() status = %v, want InvalidArgument", connect.CodeOf(err))
 	}
 }
 
@@ -79,8 +80,42 @@ func TestSendOTPRejectsInvalidPhone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.SendOTP(context.Background(), request); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("SendOTP() status = %v, want InvalidArgument", status.Code(err))
+	if _, err := service.SendOTP(context.Background(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("SendOTP() status = %v, want InvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestConnectClientCallsRegisteredHandler(t *testing.T) {
+	store := &memoryOTPStore{}
+	sms := &recordingSMS{}
+	mux := http.NewServeMux()
+	RegisterOTPServiceHandler(mux, NewOTPService(store, sms), newRateLimiter().UnaryInterceptor())
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := NewOTPServiceClient(server.Client(), server.URL)
+
+	sendRequest, err := structpb.NewStruct(map[string]any{"phone_number": "0241234567"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendResponse, err := client.SendOTP(context.Background(), sendRequest)
+	if err != nil {
+		t.Fatalf("Connect SendOTP() error = %v", err)
+	}
+	if sendResponse.Fields["message"].GetStringValue() != "OTP sent" {
+		t.Fatalf("SendOTP() response = %v, want OTP sent", sendResponse.AsMap())
+	}
+
+	verifyRequest, err := structpb.NewStruct(map[string]any{"phone_number": sms.phoneNumber, "otp": sms.code})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyResponse, err := client.VerifyOTP(context.Background(), verifyRequest)
+	if err != nil {
+		t.Fatalf("Connect VerifyOTP() error = %v", err)
+	}
+	if !verifyResponse.Fields["success"].GetBoolValue() {
+		t.Fatalf("VerifyOTP() response = %v, want success", verifyResponse.AsMap())
 	}
 }
 

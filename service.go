@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"regexp"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -33,17 +33,17 @@ func (service *OTPService) SendOTP(ctx context.Context, request *structpb.Struct
 		return nil, err
 	}
 	if !ghanaPhonePattern.MatchString(phoneNumber) {
-		return nil, status.Error(codes.InvalidArgument, "invalid Ghana phone number")
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid Ghana phone number"))
 	}
 	code, err := generateOTP()
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not generate OTP")
+		return nil, connect.NewError(connect.CodeInternal, errors.New("could not generate OTP"))
 	}
 	if err := service.store.Save(ctx, phoneNumber, code, otpTTL); err != nil {
-		return nil, status.Error(codes.Internal, "could not store OTP")
+		return nil, connect.NewError(connect.CodeInternal, errors.New("could not store OTP"))
 	}
 	if err := service.sms.Send(ctx, phoneNumber, code); err != nil {
-		return nil, status.Error(codes.Unavailable, "SMS delivery failed")
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("SMS delivery failed"))
 	}
 	return structpb.NewStruct(map[string]any{"message": "OTP sent"})
 }
@@ -59,12 +59,29 @@ func (service *OTPService) VerifyOTP(ctx context.Context, request *structpb.Stru
 	}
 	valid, err := service.store.ConsumeIfMatch(ctx, phoneNumber, code)
 	if err != nil {
-		return nil, status.Error(codes.Internal, "could not verify OTP")
+		return nil, connect.NewError(connect.CodeInternal, errors.New("could not verify OTP"))
 	}
 	if !valid {
-		return nil, status.Error(codes.InvalidArgument, "invalid or expired OTP")
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid or expired OTP"))
 	}
 	return structpb.NewStruct(map[string]any{"success": true})
+}
+
+func structField(request *structpb.Struct, field string) (string, error) {
+	if request == nil {
+		return "", connect.NewError(connect.CodeInvalidArgument, errors.New("request body is required"))
+	}
+	value, exists := request.Fields[field]
+	if !exists || value.GetKind() == nil {
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s is required", field))
+	}
+	if _, ok := value.Kind.(*structpb.Value_StringValue); !ok {
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s must be a string", field))
+	}
+	if value.GetStringValue() == "" {
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s is required", field))
+	}
+	return value.GetStringValue(), nil
 }
 
 func generateOTP() (string, error) {

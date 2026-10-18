@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
+	"connectrpc.com/connect"
 )
 
 type rateWindow struct {
@@ -18,9 +16,9 @@ type rateWindow struct {
 }
 
 type rateLimiter struct {
-	mu      sync.Mutex
-	windows map[string]rateWindow
-	limit   map[string]int
+	mu          sync.Mutex
+	windows     map[string]rateWindow
+	limit       map[string]int
 	lastCleanup time.Time
 }
 
@@ -34,14 +32,17 @@ func newRateLimiter() *rateLimiter {
 	}
 }
 
-func (limiter *rateLimiter) UnaryInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		limit, applies := limiter.limit[info.FullMethod]
-		if applies && !limiter.allow(clientIP(ctx), info.FullMethod, limit, time.Now()) {
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
+func (limiter *rateLimiter) UnaryInterceptor() connect.Interceptor {
+	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
+			procedure := request.Spec().Procedure
+			limit, applies := limiter.limit[procedure]
+			if applies && !limiter.allow(clientIP(request.Peer().Addr), procedure, limit, time.Now()) {
+				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("rate limit exceeded"))
+			}
+			return next(ctx, request)
 		}
-		return handler(ctx, request)
-	}
+	})
 }
 
 func (limiter *rateLimiter) allow(ip, method string, limit int, now time.Time) bool {
@@ -70,13 +71,12 @@ func (limiter *rateLimiter) allow(ip, method string, limit int, now time.Time) b
 	return true
 }
 
-func clientIP(ctx context.Context) string {
-	remote, exists := peer.FromContext(ctx)
-	if !exists || remote.Addr == nil {
+func clientIP(address string) string {
+	if address == "" {
 		return "unknown"
 	}
-	if host, _, err := net.SplitHostPort(remote.Addr.String()); err == nil {
+	if host, _, err := net.SplitHostPort(address); err == nil {
 		return host
 	}
-	return remote.Addr.String()
+	return address
 }

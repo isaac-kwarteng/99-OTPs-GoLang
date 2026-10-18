@@ -2,15 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
-	"google.golang.org/grpc"
 )
 
 func main() {
@@ -38,26 +38,30 @@ func main() {
 		log.Fatalf("configure SMS provider: %v", err)
 	}
 
-	address := os.Getenv("GRPC_ADDR")
+	address := os.Getenv("CONNECT_ADDR")
 	if address == "" {
 		address = ":50051"
 	}
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		log.Fatalf("listen on %s: %v", address, err)
+	mux := http.NewServeMux()
+	RegisterOTPServiceHandler(mux, NewOTPService(store, sms), newRateLimiter().UnaryInterceptor())
+	server := &http.Server{
+		Addr:              address,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	server := grpc.NewServer(grpc.UnaryInterceptor(newRateLimiter().UnaryInterceptor()))
-	RegisterOTPServiceServer(server, NewOTPService(store, sms))
 
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-shutdownContext.Done()
-		server.GracefulStop()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelShutdown()
+		if err := server.Shutdown(shutdownContext); err != nil {
+			log.Printf("graceful shutdown failed: %v", err)
+		}
 	}()
-	log.Printf("OTP gRPC server listening on %s", address)
-	if err := server.Serve(listener); err != nil {
-		log.Fatalf("serve gRPC: %v", err)
+	log.Printf("OTP Connect RPC server listening on %s", address)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("serve Connect RPC: %v", err)
 	}
 }
