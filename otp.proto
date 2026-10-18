@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package otp.v1;
+
+option go_package = "github.com/isaac-kwarteng/99-OTPs-GoLang;main";
+
+import "google/protobuf/struct.proto";
+
+service OTPService {
+  rpc SendOTP(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc VerifyOTP(google.protobuf.Struct) returns (google.protobuf.Struct);
+}
