@@ -1,6 +1,6 @@
 # 99-OTPs Go Connect RPC Service
 
-A Connect RPC service that generates six-digit OTPs, sends them through a configurable SMS provider, and verifies them once. Codes are stored in Redis for two minutes. Connect handlers also support gRPC and gRPC-Web clients.
+A Connect RPC service that generates six-digit OTPs, sends them through a configurable SMS provider, and verifies them once. Codes are stored in Redis for two minutes. The Connect protocol works over HTTP/1.1 or HTTP/2.
 
 ## Requirements
 
