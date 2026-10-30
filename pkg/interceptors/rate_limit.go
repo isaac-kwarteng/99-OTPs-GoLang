@@ -1,4 +1,4 @@
-package main
+package interceptors
 
 import (
 	"context"
@@ -15,28 +15,26 @@ type rateWindow struct {
 	count   int
 }
 
-type rateLimiter struct {
+// RateLimiter applies fixed one-minute windows per procedure and client IP.
+type RateLimiter struct {
 	mu          sync.Mutex
 	windows     map[string]rateWindow
-	limit       map[string]int
+	limits      map[string]int
 	lastCleanup time.Time
 }
 
-func newRateLimiter() *rateLimiter {
-	return &rateLimiter{
+func NewRateLimiter(limits map[string]int) *RateLimiter {
+	return &RateLimiter{
 		windows: make(map[string]rateWindow),
-		limit: map[string]int{
-			"/" + otpServiceName + "/SendOTP":   5,
-			"/" + otpServiceName + "/VerifyOTP": 10,
-		},
+		limits:  limits,
 	}
 }
 
-func (limiter *rateLimiter) UnaryInterceptor() connect.Interceptor {
+func (limiter *RateLimiter) UnaryInterceptor() connect.Interceptor {
 	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
 			procedure := request.Spec().Procedure
-			limit, applies := limiter.limit[procedure]
+			limit, applies := limiter.limits[procedure]
 			if applies && !limiter.allow(clientIP(request.Peer().Addr), procedure, limit, time.Now()) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("rate limit exceeded"))
 			}
@@ -45,7 +43,7 @@ func (limiter *rateLimiter) UnaryInterceptor() connect.Interceptor {
 	})
 }
 
-func (limiter *rateLimiter) allow(ip, method string, limit int, now time.Time) bool {
+func (limiter *RateLimiter) allow(ip, procedure string, limit int, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	if now.Sub(limiter.lastCleanup) >= time.Minute {
@@ -57,7 +55,7 @@ func (limiter *rateLimiter) allow(ip, method string, limit int, now time.Time) b
 		limiter.lastCleanup = now
 	}
 
-	key := method + ":" + ip
+	key := procedure + ":" + ip
 	window, exists := limiter.windows[key]
 	if !exists || now.Sub(window.started) >= time.Minute {
 		limiter.windows[key] = rateWindow{started: now, count: 1}

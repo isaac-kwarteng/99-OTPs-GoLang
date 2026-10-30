@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package marketdome.otp.v1;
+
+import "marketdome/otp/v1/otp.proto";
+
+service OTPService {
+  rpc SendOTP(SendOTPRequest) returns (SendOTPResponse) {}
+  rpc VerifyOTP(VerifyOTPRequest) returns (VerifyOTPResponse) {}
+}
