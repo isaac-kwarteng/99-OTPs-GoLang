@@ -1,0 +1,141 @@
+name: Deploy Service
+
+on:
+  workflow_run:
+    workflows: [ "Build and Push Docker Image" ]
+    types: [ completed ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      VAULT_ADDR: https://vault.sys.vigil-hq.com
+      SERVICE: ${{ github.event.repository.name }}
+      IMAGE: ghcr.io/vigil-hq/marketdome/otp-api:latest
+      NETWORK: backend
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gpg jq
+          wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update
+          sudo apt-get install -y vault
+      # 🔐 Use root/static token instead of OIDC
+      - name: Set Vault Token
+        run: |
+          echo "VAULT_TOKEN=${{ secrets.VAULT_ROOT_TOKEN }}" >> $GITHUB_ENV
+      - name: Verify Vault Authentication
+        run: |
+          set -euo pipefail
+          export VAULT_ADDR=${VAULT_ADDR}
+          export VAULT_TOKEN=${{ secrets.VAULT_ROOT_TOKEN }}
+          echo "Checking Vault connectivity..."
+          vault status
+          echo "Checking token validity..."
+          vault token lookup || exit 1
+      # 📁 Ensure shared secrets exist
+      - name: Ensure shared secret paths exist
+        run: |
+          set -e
+          for secret in redis sms; do
+            echo "Ensuring secret/data/prod/shared/$secret exists"
+            vault kv get secret/data/prod/shared/$secret >/dev/null 2>&1 || \
+            vault kv put secret/data/prod/shared/$secret initialized=true
+          done
+      # 📁 Ensure service secrets exist
+      - name: Ensure service secret paths exist
+        run: |
+          set -e
+          for key in app; do
+            echo "Ensuring secret/data/prod/services/$SERVICE/$key exists"
+            vault kv get secret/data/prod/services/$SERVICE/$key >/dev/null 2>&1 || \
+            vault kv put secret/data/prod/services/$SERVICE/$key initialized=true
+          done
+      # 🔑 Build ENV_ARGS directly (NO .env)
+      - name: Build Environment Variables from Vault
+        run: |
+          set -euo pipefail
+          
+          declare -A env_map
+          
+          # ===============================
+          # Shared secrets
+          # ===============================
+          for secret in redis sms; do
+            echo "Fetching shared secret: $secret"
+            VARS=$(vault kv get -format=json secret/data/prod/shared/$secret |
+              jq -r '.data.data | to_entries | .[] | "\(.key)=\(.value)"')
+          
+            for kv in $VARS; do
+              key="${kv%%=*}"
+              value="${kv#*=}"
+              env_map["$key"]="$value"
+            done
+          done
+          
+          # ===============================
+          # Service-specific secrets
+          # ===============================
+          SERVICE_KEYS=("app")
+          
+          for key in "${SERVICE_KEYS[@]}"; do
+            echo "Fetching service/$SERVICE/$key"
+            VARS=$(vault kv get -format=json secret/data/prod/services/$SERVICE/$key |
+              jq -r '.data.data | to_entries | .[] | "\(.key)=\(.value)"')
+          
+            for kv in $VARS; do
+              k="${kv%%=*}"
+              v="${kv#*=}"
+              env_map["$k"]="$v"
+            done
+          done
+          
+          # ===============================
+          # Build ENV_ARGS_STRING
+          # ===============================
+          sorted_keys=$(printf "%s\n" "${!env_map[@]}" | sort -u)
+          
+          ENV_ARGS_STRING=""
+          for k in $sorted_keys; do
+            escaped_value=$(printf '%s\n' "${env_map[$k]}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            ENV_ARGS_STRING="$ENV_ARGS_STRING --env \"$k=$escaped_value\""
+          done
+          
+          echo "ENV_ARGS_STRING<<EOF" >> $GITHUB_ENV
+          echo "$ENV_ARGS_STRING" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      - name: Verify merged secrets
+        run: |
+          echo "Final ENV_ARGS:"
+          echo "$ENV_ARGS_STRING" | sed 's/--env /\n--env /g'
+      # 🚀 SSH Deploy (unchanged logic, slightly hardened)
+      - name: SSH Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: SERVICE,NETWORK,ENV_ARGS_STRING,IMAGE
+          script: |
+            echo "SERVICE=$SERVICE"
+            echo "IMAGE=$IMAGE"
+            
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+            docker network inspect $NETWORK || docker network create $NETWORK
+            
+            docker pull $IMAGE || true
+            docker rm -f $SERVICE || true
+            
+            echo "🚀 Running container with environment variables"
+            echo "ENV_ARGS_STRING: $ENV_ARGS_STRING"
+            
+            eval "docker run -d --name $SERVICE --network $NETWORK $ENV_ARGS_STRING $IMAGE"
+            

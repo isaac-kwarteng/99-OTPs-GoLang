@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: proto
+    name: buf.build/marketdome/otp-api
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - STANDARD
+deps:
+  - buf.build/bufbuild/protovalidate
+  - buf.build/googleapis/googleapis

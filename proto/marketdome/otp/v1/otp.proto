@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package marketdome.otp.v1;
+
+import "buf/validate/validate.proto";
+import "google/type/phone_number.proto";
+
+message SendOTPRequest {
+  // Ghana number in E.164 format, e.g. +233241234567
+  google.type.PhoneNumber phone_number = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).cel = {
+      id: "phone_number.ghana_e164"
+      message: "phone_number must be a Ghana number in E.164 format (+233XXXXXXXXX)"
+      expression: "this.e164_number.matches('^\\\\+233[2-9][0-9]{8}$')"
+    }
+  ];
+}
+
+message SendOTPResponse {
+  string message = 1;
+  int32 expires_in = 2;
+}
+
+message VerifyOTPRequest {
+  google.type.PhoneNumber phone_number = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).cel = {
+      id: "phone_number.ghana_e164"
+      message: "phone_number must be a Ghana number in E.164 format (+233XXXXXXXXX)"
+      expression: "this.e164_number.matches('^\\\\+233[2-9][0-9]{8}$')"
+    }
+  ];
+  string otp = 2 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+}
+
+message VerifyOTPResponse {
+  bool success = 1;
+}
