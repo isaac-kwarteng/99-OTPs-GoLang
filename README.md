@@ -20,7 +20,7 @@ thirdparty/sms                 SMS providers (one file each) and the provider fa
 jasmin/provision.sh            local Jasmin setup used by docker-compose
 ```
 
-## Configuration
+Yeah. That one.
 
 Copy `.env.sample` to `.env`:
 
